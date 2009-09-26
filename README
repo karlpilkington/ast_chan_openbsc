@@ -1,0 +1,8 @@
+chan_openbsc
+------------
+
+Channel driver for the OpenBSC project ( http://openbsc.gnumonks.org/ )
+
+To build, just make sure you have the asterisk sources in ../asterisk,
+or use the ASTSRC env variable. Then just type make.
+
