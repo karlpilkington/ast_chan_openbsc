@@ -1,4 +1,11 @@
 ASTSRC?=../asterisk
+OPENBSCSRC?=../openbsc
+
+
+OPENBSC_SRC = bsc_init.c vty_interface.c vty_interface_layer3.c
+OPENBSC_LIBS = libmsc.a libbsc.a libmsc.a libvty.a
+OPENBSC_INCLUDES = -I$(OPENBSCSRC)/include
+OPENBSC_LDFLAGS = -ldl -ldbi -lcrypt
 
 
 ASTTOPDIR=$(ASTSRC)
@@ -45,4 +52,8 @@ all: _all
 
 include $(ASTTOPDIR)/Makefile.moddir_rules
 
+# Add OpenBSC stuff in the mix
+chan_openbsc.o:: _ASTCFLAGS+=$(OPENBSC_INCLUDES)
+chan_openbsc.so: $(addprefix $(OPENBSCSRC)/src/,$(patsubst %.c,%.o,$(OPENBSC_SRC))) $(addprefix $(OPENBSCSRC)/src/,$(OPENBSC_LIBS))
+chan_openbsc.so:: _ASTLDFLAGS+=$(OPENBSC_LDFLAGS)
 

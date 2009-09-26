@@ -17,6 +17,8 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include <pthread.h>
 #include <unistd.h>
 
+#include <openbsc/gsm_data.h>
+
 #include "asterisk/channel.h"
 #include "asterisk/logger.h"
 #include "asterisk/module.h"
@@ -25,6 +27,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 /* ------------------------------------------------------------------------ */
 /* OpenBSC                                                                  */
 /* ---------------------------------------------------------------------{{{ */
+
+
+struct gsm_network *bsc_gsmnet = 0;
 
 
 /* Main thread */
