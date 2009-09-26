@@ -14,8 +14,227 @@
 
 ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 
+#include "asterisk/channel.h"
 #include "asterisk/logger.h"
 #include "asterisk/module.h"
+
+
+/* ------------------------------------------------------------------------ */
+/* Channel driver                                                           */
+/* ---------------------------------------------------------------------{{{ */
+
+static struct ast_channel *
+openbsc_chan_requester(const char *type, int format, void *data, int *cause)
+{
+	return 0;
+}
+
+#if 0
+static int
+openbsc_chan_devicestate(void *data)
+{
+	return 0;
+}
+#endif
+
+static int
+openbsc_chan_send_digit_begin(struct ast_channel *chan, char digit)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_send_digit_end(struct ast_channel *chan, char digit, unsigned int duration)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_call(struct ast_channel *chan, char *addr, int timeout)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_hangup(struct ast_channel *chan)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_answer(struct ast_channel *chan)
+{
+	return 0;
+}
+
+static struct ast_frame *
+openbsc_chan_read(struct ast_channel *chan)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_write(struct ast_channel *chan, struct ast_frame *frame)
+{
+	return 0;
+}
+
+#if 0
+static int
+openbsc_chan_send_text(struct ast_channel *chan, const char *text)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_send_image(struct ast_channel *chan, struct ast_frame *frame)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_send_html(struct ast_channel *chan, int subclass, const char *data, int len)
+{
+	return 0;
+}
+
+static struct ast_frame *
+openbsc_chan_exception(struct ast_channel *chan)
+{
+	return 0;
+}
+
+static enum ast_bridge_result
+openbsc_chan_bridge(struct ast_channel *c0, struct ast_channel *c1,
+		int flags, struct ast_frame **fo, struct ast_channel **rc, int timeoutms)
+{
+	return 0;
+}
+
+static enum ast_bridge_result
+openbsc_chan_early_bridge(struct ast_channel *c0, struct ast_channel *c1)
+{
+	return 0;
+}
+#endif
+
+static int
+openbsc_chan_indicate(struct ast_channel *c, int condition, const void *data, size_t datalen)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_fixup(struct ast_channel *oldchan, struct ast_channel *newchan)
+{
+	return 0;
+}
+
+#if 0
+static int
+openbsc_chan_setoption(struct ast_channel *chan, int option, void *data, int datalen)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_queryoption(struct ast_channel *chan, int option, void *data, int *datalen)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_transfer(struct ast_channel *chan, const char *newdest)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_write_video(struct ast_channel *chan, struct ast_frame *frame)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_write_text(struct ast_channel *chan, struct ast_frame *frame)
+{
+	return 0;
+}
+
+static struct ast_channel *
+openbsc_chan_bridged_channel(struct ast_channel *chan, struct ast_channel *bridge)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_func_channel_read(struct ast_channel *chan, const char *function, char *data, char *buf, size_t len)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_func_channel_write(struct ast_channel *chan, const char *function, char *data, const char *value)
+{
+	return 0;
+}
+
+static struct ast_channel*
+openbsc_chan_get_base_channel(struct ast_channel *chan)
+{
+	return 0;
+}
+
+static int
+openbsc_chan_set_base_channel(struct ast_channel *chan, struct ast_channel *base)
+{
+	return 0;
+}
+
+static const char *
+openbsc_chan_get_pvt_uniqueid(struct ast_channel *chan)
+{
+	return 0;
+}
+#endif
+
+
+static const struct ast_channel_tech openbsc_tech = {
+	.type = "OpenBSC",
+	.description = "Channel driver for OpenBSC",
+	.capabilities = AST_FORMAT_GSM, /* FIXME */
+	.properties = 0, /* FIXME */
+	.requester = openbsc_chan_requester,
+	/* .devicestate = openbsc_chan_devicestate, */
+	.send_digit_begin = openbsc_chan_send_digit_begin,
+	.send_digit_end = openbsc_chan_send_digit_end,
+	.call = openbsc_chan_call,
+	.hangup = openbsc_chan_hangup,
+	.answer = openbsc_chan_answer,
+	.read = openbsc_chan_read,
+	.write = openbsc_chan_write,
+	/* .send_text = openbsc_chan_send_text, */
+	/* .send_image = openbsc_chan_send_image, */
+	/* .send_html = openbsc_chan_send_html, */
+	/* .exception = openbsc_chan_exception, */
+	/* .bridge = openbsc_chan_bridge, */
+	/* .early_bridge = openbsc_chan_early_bridge, */
+	.indicate = openbsc_chan_indicate,
+	.fixup = openbsc_chan_fixup,
+	/* .setoption = openbsc_chan_setoption, */
+	/* .queryoption = openbsc_chan_queryoption, */
+	/* .transfer = openbsc_chan_transfer, */
+	/* .write_video = openbsc_chan_write_video, */
+	/* .write_text = openbsc_chan_write_text, */
+	/* .bridged_channel = openbsc_chan_bridged_channel, */
+	/* .func_channel_read = openbsc_chan_func_channel_read, */
+	/* .func_channel_write = openbsc_chan_func_channel_write, */
+	/* .get_base_channel = openbsc_chan_get_base_channel, */
+	/* .set_base_channel = openbsc_chan_set_base_channel, */
+	/* .get_pvt_uniqueid = openbsc_chan_get_pvt_uniqueid, */
+};
+
+/* }}} */
 
 
 /* ------------------------------------------------------------------------ */
@@ -25,6 +244,11 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 static int
 load_module(void)
 {
+	if (ast_channel_register(&openbsc_tech)) {
+		ast_log(LOG_ERROR, "Unable to register channel class 'OpenBSC'\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
 	ast_log(LOG_NOTICE, "OpenBSC channel driver loaded\n");
 
 	return AST_MODULE_LOAD_SUCCESS;
@@ -35,6 +259,8 @@ static int
 unload_module(void)
 {
 	ast_log(LOG_NOTICE, "OpenBSC channel driver unloading.\n");
+
+	ast_channel_unregister(&openbsc_tech);
 
 	return 0;
 }
