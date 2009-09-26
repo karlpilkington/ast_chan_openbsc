@@ -14,9 +14,53 @@
 
 ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 
+#include <pthread.h>
+#include <unistd.h>
+
 #include "asterisk/channel.h"
 #include "asterisk/logger.h"
 #include "asterisk/module.h"
+
+
+/* ------------------------------------------------------------------------ */
+/* OpenBSC                                                                  */
+/* ---------------------------------------------------------------------{{{ */
+
+
+/* Main thread */
+static int g_done;
+static pthread_t g_main_tid;
+
+static void *
+openbsc_main(void *arg)
+{
+	ast_log(LOG_DEBUG, "OpenBSC channel main thread started\n");
+
+	while (!g_done) {
+		sleep(1.0);
+		ast_log(LOG_DEBUG, "OpenBSC alive\n");
+	}
+
+	ast_log(LOG_DEBUG, "OpenBSC channel main thread exiting\n");
+
+	return NULL;
+}
+
+static int
+openbsc_start(void)
+{
+	g_done = 0;
+	return pthread_create(&g_main_tid, NULL, openbsc_main, NULL);
+}
+
+static void
+openbsc_stop(void)
+{
+	g_done = 1;
+	pthread_join(g_main_tid, NULL);
+}
+
+/* }}} */
 
 
 /* ------------------------------------------------------------------------ */
@@ -249,6 +293,12 @@ load_module(void)
 		return AST_MODULE_LOAD_FAILURE;
 	}
 
+	if (openbsc_start()) {
+		ast_channel_unregister(&openbsc_tech);
+		ast_log(LOG_ERROR, "Unable to start OpenBSC main thread\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
 	ast_log(LOG_NOTICE, "OpenBSC channel driver loaded\n");
 
 	return AST_MODULE_LOAD_SUCCESS;
@@ -259,6 +309,8 @@ static int
 unload_module(void)
 {
 	ast_log(LOG_NOTICE, "OpenBSC channel driver unloading.\n");
+
+	openbsc_stop();
 
 	ast_channel_unregister(&openbsc_tech);
 
