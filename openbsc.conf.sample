@@ -1,0 +1,27 @@
+;
+; Asterisk OpenBSC channel driver configuration
+;
+
+[general]
+
+; Path to OpenBSC config
+config_file = /path/to/openbsc.cfg
+
+; Path to OpemBSC HLR db file
+db_file = /path/to/hlr.sqlite3
+
+; Debugging option (empty to disable, colon separated values)
+; debug = DRLL:DCC:DMM:DRR:DRSL:DNM
+
+; Color log
+; debug_color = yes
+
+; Timestamped log
+; debug_timestamp = no
+
+; Custom reject cause for LOCATION UPDATING REJECT
+; reject_cause = 0
+
+; PCAP file
+; pcap_file = /path/to/log.pcap
+

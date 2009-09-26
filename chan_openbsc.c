@@ -14,10 +14,19 @@
 
 ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/stat.h>
 
+#include <openbsc/debug.h>
+#include <openbsc/db.h>
+#include <openbsc/e1_input.h>
 #include <openbsc/gsm_data.h>
+#include <openbsc/select.h>
+#include <openbsc/talloc.h>
 
 #include "asterisk/channel.h"
 #include "asterisk/logger.h"
@@ -28,13 +37,103 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 /* OpenBSC                                                                  */
 /* ---------------------------------------------------------------------{{{ */
 
+struct openbsc_config {
+	char config_file[PATH_MAX];
+	char db_file[PATH_MAX];
+	char pcap_file[PATH_MAX];
+	char debug_filter[128];
+	int debug_color;
+	int debug_timestamp;
+	int reject_cause;
+};
 
 struct gsm_network *bsc_gsmnet = 0;
+extern int ipacc_rtp_direct;
 
+extern int bsc_bootstrap_network(int (*mmc_rev)(struct gsm_network *, int, void *),
+				 const char *cfg_file);
+extern int bsc_shutdown_net(struct gsm_network *net);
+
+
+/* PCAP logging */
+static int
+create_pcap_file(char *file)
+{
+	mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+	int fd = open(file, O_WRONLY|O_TRUNC|O_CREAT, mode);
+
+	if (fd < 0) {
+		ast_log(LOG_ERROR, "Failed to open file for pcap\n");
+		return -1;
+	}
+
+	e1_set_pcap_fd(fd);
+
+	return 0;
+}
 
 /* Main thread */
 static int g_done;
 static pthread_t g_main_tid;
+
+static int
+openbsc_init(struct openbsc_config *cfg)
+{
+	int rc;
+
+	/* seed the PRNG */
+	srand(time(NULL));
+
+	/* debug init */
+	if (cfg->debug_filter[0])
+		debug_parse_category_mask(cfg->debug_filter);
+	debug_use_color(cfg->debug_color);
+	debug_timestamp(cfg->debug_timestamp);
+
+	/* pcap file init */
+	if (cfg->pcap_file[0])
+		create_pcap_file(cfg->pcap_file);
+
+	/* other config */
+	if (cfg->reject_cause >= 0)
+		gsm0408_set_reject_cause(cfg->reject_cause);
+
+	/* talloc contexts init */
+	tall_bsc_ctx = talloc_named_const(NULL, 1, "openbsc");
+	talloc_ctx_init();
+
+	/* submod init */
+	on_dso_load_token();
+	on_dso_load_rrlp();
+
+	/* HLR/DB init */
+	if (db_init(cfg->db_file)) {
+		ast_log(LOG_ERROR, "DB: Failed to init database. Please check the option settings.\n");
+		return -1;
+	}
+	ast_log(LOG_DEBUG, "DB: Database initialized.\n");
+
+	if (db_prepare()) {
+		ast_log(LOG_ERROR, "DB: Failed to prepare database.\n");
+		return -1;
+	}
+	ast_log(LOG_DEBUG, "DB: Database prepared.\n");
+
+	/* Bootstrap all network stuff */
+	rc = bsc_bootstrap_network(mncc_recv, cfg->config_file);
+	if (rc < 0) {
+		ast_log(LOG_ERROR, "Failed to bootstrap network\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static void
+openbsc_destroy()
+{
+	bsc_shutdown_net(bsc_gsmnet);	/* FIXME not everything is freed !!! */
+}
 
 static void *
 openbsc_main(void *arg)
@@ -42,8 +141,8 @@ openbsc_main(void *arg)
 	ast_log(LOG_DEBUG, "OpenBSC channel main thread started\n");
 
 	while (!g_done) {
-		sleep(1.0);
-		ast_log(LOG_DEBUG, "OpenBSC alive\n");
+		bsc_upqueue(bsc_gsmnet);
+		bsc_select_main(0);
 	}
 
 	ast_log(LOG_DEBUG, "OpenBSC channel main thread exiting\n");
@@ -290,9 +389,88 @@ static const struct ast_channel_tech openbsc_tech = {
 /* Asterisk Module                                                          */
 /* ---------------------------------------------------------------------{{{ */
 
+static struct openbsc_config *
+config_module(void)
+{
+	const char *config_filename = "openbsc.conf";
+	const struct ast_flags config_flags = { 0 };
+
+	struct ast_config *ast_cfg;
+	struct ast_variable *v;
+	struct openbsc_config *cfg;
+
+	/* Config structure */
+	cfg = calloc(1, sizeof(struct openbsc_config));
+	if (!cfg) {
+		ast_log(LOG_ERROR, "Failed to allocate memory for config structure\n");
+		return NULL;
+	}
+
+	/* Default options */
+	strcpy(cfg->config_file, "/etc/openbsc.conf");
+	strcpy(cfg->db_file, "/var/lib/openbsc/hlr.sqlite3");
+	strcpy(cfg->debug_filter, "DRLL:DCC:DMM:DRR:DRSL:DNM");
+	cfg->debug_color = 1;
+	cfg->debug_timestamp = 0;
+	cfg->reject_cause = -1;
+
+	/* Asterisk config load */
+	ast_cfg = ast_config_load(config_filename, config_flags);
+	if (!ast_cfg) {
+		ast_log(LOG_WARNING, "Unable to load config %s, fall back to default values\n", config_filename);
+		return cfg;
+	} else if (ast_cfg == CONFIG_STATUS_FILEINVALID) {
+		ast_log(LOG_ERROR, "Config file %s is in an invalid format.  Aborting.\n", config_filename);
+		return NULL;
+	}
+
+	/* Parse the K,V of the config file */
+	for (v = ast_variable_browse(ast_cfg, "general"); v; v = v->next)
+	{
+		if (!strcasecmp(v->name, "config_file")) {
+			ast_copy_string(cfg->config_file, v->value, sizeof(cfg->config_file));
+		} else if (!strcasecmp(v->name, "db_file")) {
+			ast_copy_string(cfg->db_file, v->value, sizeof(cfg->db_file));
+		} else if (!strcasecmp(v->name, "debug")) {
+			ast_copy_string(cfg->debug_filter, v->value, sizeof(cfg->debug_filter));
+		} else if (!strcasecmp(v->name, "debug_color")) {
+			cfg->debug_color = ast_true(v->value) ? 1 : 0;
+		} else if (!strcasecmp(v->name, "debug_timestamp")) {
+			cfg->debug_timestamp = ast_true(v->value) ? 1 : 0;
+		} else if (!strcasecmp(v->name, "reject_cause")) {
+			cfg->reject_cause = atoi(v->value);
+		} else if (!strcasecmp(v->name, "pcap_file")) {
+			ast_copy_string(cfg->pcap_file, v->value, sizeof(cfg->pcap_file));
+		} else {
+			ast_log(LOG_WARNING, "Unknown config key %s ignored\n", v->name);
+		}
+	}
+
+	/* Release asterisk config object */
+	ast_config_destroy(ast_cfg);
+
+	return cfg;
+}
+
 static int
 load_module(void)
 {
+	struct openbsc_config *cfg;
+	int rv;
+
+	cfg = config_module();
+	if (!cfg)
+		return AST_MODULE_LOAD_DECLINE;
+
+	rv = openbsc_init(cfg);
+
+	free(cfg);
+
+	if (rv) {
+		ast_log(LOG_ERROR, "Failed to initialize OpenBSC\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
 	if (ast_channel_register(&openbsc_tech)) {
 		ast_log(LOG_ERROR, "Unable to register channel class 'OpenBSC'\n");
 		return AST_MODULE_LOAD_FAILURE;
@@ -318,6 +496,8 @@ unload_module(void)
 	openbsc_stop();
 
 	ast_channel_unregister(&openbsc_tech);
+
+	openbsc_destroy();
 
 	return 0;
 }
