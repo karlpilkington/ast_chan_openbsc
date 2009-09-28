@@ -1,0 +1,108 @@
+diff --git a/openbsc/include/openbsc/mncc.h b/openbsc/include/openbsc/mncc.h
+index 68d76ab..0e9844a 100644
+--- a/openbsc/include/openbsc/mncc.h
++++ b/openbsc/include/openbsc/mncc.h
+@@ -86,6 +86,7 @@ struct gsm_call {
+ #define MNCC_FRAME_RECV		0x0201
+ #define MNCC_FRAME_DROP		0x0202
+ #define MNCC_LCHAN_MODIFY	0x0203
++#define MNCC_BRIDGE_RTP		0x0204
+ 
+ #define GSM_TRAU_FRAME		0x0300
+ 
+@@ -205,6 +206,12 @@ struct gsm_trau_frame {
+ 	unsigned char	data[0];
+ };
+ 
++struct gsm_mncc_bridge_rtp_arg {
++	u_int32_t	callref;
++	u_int32_t	ip; /* IP in host byte order */
++	u_int16_t	port;
++};
++
+ char *get_mncc_name(int value);
+ int mncc_recv(struct gsm_network *net, int msg_type, void *arg);
+ void mncc_set_cause(struct gsm_mncc *data, int loc, int val);
+diff --git a/openbsc/src/gsm_04_08.c b/openbsc/src/gsm_04_08.c
+index bac920e..752a554 100644
+--- a/openbsc/src/gsm_04_08.c
++++ b/openbsc/src/gsm_04_08.c
+@@ -1936,6 +1936,36 @@ static int ipacc_connect_proxy_bind(struct gsm_lchan *lchan)
+ 	return rc;
+ }
+ 
++/* map a tch channel to an external RTP endpoint */
++static int tch_map_rtp(struct gsm_lchan *lchan, u_int32_t *ip, u_int16_t *port)
++{
++	struct gsm_bts *bts = lchan->ts->trx->bts;
++	int rc;
++
++	DEBUGP(DCC, "Setting up external RTP TCH map between (bts=%u,trx=%u,ts=%u) and (ip=%08x, port=%d)\n",
++		bts->nr, lchan->ts->trx->nr, lchan->ts->nr,
++		ip, port);
++
++	switch (bts->type) {
++	case GSM_BTS_TYPE_NANOBTS_900:
++	case GSM_BTS_TYPE_NANOBTS_1800:
++			/* FIXME the rtp_payload2 field should be from remote */
++		rc = rsl_ipacc_connect(lchan, *ip, *port, lchan->ts->abis_ip.conn_id, 
++					lchan->ts->abis_ip.rtp_payload2);
++		if (rc < 0)
++			return rc;
++		*ip   = lchan->ts->abis_ip.bound_ip;
++		*port = lchan->ts->abis_ip.bound_port;
++		break;
++
++	default:
++		DEBUGP(DCC, "Unsupported BTS type\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
+ /* map two ipaccess RTP streams onto each other */
+ static int tch_map(struct gsm_lchan *lchan, struct gsm_lchan *remote_lchan)
+ {
+@@ -1994,6 +2024,20 @@ static int tch_map(struct gsm_lchan *lchan, struct gsm_lchan *remote_lchan)
+ 	return 0;
+ }
+ 
++/* bridge a channel and an external rtp endpoint */
++static int tch_bridge_rtp(struct gsm_network *net, struct gsm_mncc_bridge_rtp_arg *arg)
++{
++	struct gsm_trans *trans = trans_find_by_callref(net, arg->callref);
++
++	if (!trans || !arg->ip || !arg->port)
++		return -EIO;
++
++	if (!trans->lchan)
++		return -EIO;
++
++	return tch_map_rtp(trans->lchan, &arg->ip, &arg->port);
++}
++
+ /* bridge channels of two transactions */
+ static int tch_bridge(struct gsm_network *net, u_int32_t *refs)
+ {
+@@ -3286,6 +3330,8 @@ int mncc_send(struct gsm_network *net, int msg_type, void *arg)
+ 	switch(msg_type) {
+ 	case MNCC_BRIDGE:
+ 		return tch_bridge(net, arg);
++	case MNCC_BRIDGE_RTP:
++		return tch_bridge_rtp(net, arg);
+ 	case MNCC_FRAME_DROP:
+ 		return tch_recv(net, arg, 0);
+ 	case MNCC_FRAME_RECV:
+diff --git a/openbsc/src/mncc.c b/openbsc/src/mncc.c
+index f62541c..e12e458 100644
+--- a/openbsc/src/mncc.c
++++ b/openbsc/src/mncc.c
+@@ -81,6 +81,7 @@ static struct mncc_names {
+ 	{"MNCC_FRAME_RECV",	0x0201},
+ 	{"MNCC_FRAME_DROP",	0x0202},
+ 	{"MNCC_LCHAN_MODIFY",	0x0203},
++	{"MNCC_BRIDGE_EXT",	0x0204},
+ 
+ 	{"GSM_TRAU_FRAME",	0x0300},
+ 
