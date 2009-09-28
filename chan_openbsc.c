@@ -29,8 +29,28 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include <openbsc/talloc.h>
 
 #include "asterisk/channel.h"
+#include "asterisk/linkedlists.h"
 #include "asterisk/logger.h"
 #include "asterisk/module.h"
+
+
+enum call_direction {
+	MOBILE_ORIGINATED,
+	MOBILE_TERMINATED,
+};
+
+	/* Uses the owner lock, or g_openbsc_lock if owner==NULL */
+struct openbsc_chan_priv {
+	struct ast_channel *owner;
+
+	u_int32_t callref;
+	enum call_direction dir;
+
+	AST_LIST_ENTRY(openbsc_chan_priv) _list;
+};
+
+static AST_RWLIST_HEAD_STATIC(g_privs, openbsc_chan_priv);
+static u_int32_t g_nextcallref = 0x00000001;	/* uses g_privs lock */
 
 
 AST_MUTEX_DEFINE_STATIC(g_openbsc_lock);
@@ -182,10 +202,128 @@ openbsc_stop(void)
 /* Channel driver                                                           */
 /* ---------------------------------------------------------------------{{{ */
 
+static const struct ast_channel_tech openbsc_tech;
+
+
+/* Helpers */
+
+static struct ast_channel *
+_openbsc_chan_new(struct openbsc_chan_priv *p, int state)
+{
+	struct ast_channel *chan = NULL;
+
+	chan = ast_channel_alloc(1, state, 0, NULL, "", "", "", 0, "OpenBSC/callref-%d", p->callref);
+	if (!chan)
+		return NULL;
+
+	chan->tech = &openbsc_tech;
+	chan->nativeformats = AST_FORMAT_GSM;
+	chan->readformat    = AST_FORMAT_GSM;
+	chan->writeformat   = AST_FORMAT_GSM;
+
+	chan->tech_pvt = p;
+	p->owner = chan;
+
+	ast_module_ref(ast_module_info->self);
+
+	return chan;
+}
+
+static void
+_openbsc_chan_detach(struct ast_channel *chan)
+{
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+
+	chan->tech_pvt = NULL;
+	p->owner = NULL;
+
+	ast_module_unref(ast_module_info->self);
+}
+
+static struct openbsc_chan_priv *
+_openbsc_chan_priv_new(u_int32_t callref, enum call_direction dir)
+{
+	struct openbsc_chan_priv *p = NULL;
+
+	AST_RWLIST_WRLOCK(&g_privs);
+
+	/* Auto callref */
+	if (!callref) {
+		callref = g_nextcallref;
+		g_nextcallref = (g_nextcallref + 1) & 0x7fffffff;
+	}
+
+	/* Alloc and init the structure */
+	p = ast_calloc(1, sizeof(*p));
+	if (!p) {
+		ast_log(LOG_ERROR, "Failed to allocate channel private structure\n");
+		goto error;
+	}
+
+	p->callref = callref;
+	p->dir = dir;
+
+	/* Finally add to the list */
+	AST_RWLIST_INSERT_HEAD(&g_privs, p, _list);
+
+	AST_RWLIST_UNLOCK(&g_privs);
+
+	return p;
+
+error:
+	if (p)
+		ast_free(p);
+	AST_RWLIST_UNLOCK(&g_privs);
+	return NULL;
+}
+
+static void
+_openbsc_chan_priv_destroy(struct openbsc_chan_priv *p)
+{
+	/* Remove entry from the list */
+	AST_RWLIST_WRLOCK(&g_privs);
+	AST_RWLIST_REMOVE(&g_privs, p, _list);
+	AST_RWLIST_UNLOCK(&g_privs);
+
+	/* Free memory */
+	ast_free(p);
+}
+
+static struct openbsc_chan_priv *
+_openbsc_chan_priv_find(u_int32_t callref)
+{
+	/* FIXME */
+	/* Also, what about race conditions ? I could find a channel with the
+	 * given callref but then have it deleted under my nose ... */
+}
+
+
+/* Interface implementation */
+
 static struct ast_channel *
 openbsc_chan_requester(const char *type, int format, void *data, int *cause)
 {
-	return 0;
+	struct openbsc_chan_priv *p = NULL;
+	struct ast_channel *chan = NULL;
+
+	p = _openbsc_chan_priv_new(0, MOBILE_TERMINATED);
+	if (!p) {
+		ast_log(LOG_ERROR, "Failed to create channel private structure\n");
+		goto error;
+	}
+
+	chan = _openbsc_chan_new(p, AST_STATE_DOWN);
+	if (!chan) {
+		ast_log(LOG_ERROR, "Failed to create channel structure\n");
+		goto error;
+	}
+
+	return chan;
+
+error:
+	if (p)
+		_openbsc_chan_priv_destroy(p);
+	return NULL;
 }
 
 #if 0
@@ -217,6 +355,11 @@ openbsc_chan_call(struct ast_channel *chan, char *addr, int timeout)
 static int
 openbsc_chan_hangup(struct ast_channel *chan)
 {
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+
+	_openbsc_chan_detach(chan);
+	_openbsc_chan_priv_destroy(p); /* FIXME shouldn't be done here in the future */
+
 	return 0;
 }
 
