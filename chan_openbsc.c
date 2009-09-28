@@ -51,7 +51,6 @@ struct openbsc_config {
 };
 
 struct gsm_network *bsc_gsmnet = 0;
-extern int ipacc_rtp_direct;
 
 extern int bsc_bootstrap_network(int (*mmc_rev)(struct gsm_network *, int, void *),
 				 const char *cfg_file);
