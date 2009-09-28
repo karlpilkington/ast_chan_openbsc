@@ -33,6 +33,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include "asterisk/module.h"
 
 
+AST_MUTEX_DEFINE_STATIC(g_openbsc_lock);
+
+
 /* ------------------------------------------------------------------------ */
 /* OpenBSC                                                                  */
 /* ---------------------------------------------------------------------{{{ */
@@ -138,11 +141,20 @@ openbsc_destroy()
 static void *
 openbsc_main(void *arg)
 {
+	int work;
+
 	ast_log(LOG_DEBUG, "OpenBSC channel main thread started\n");
 
 	while (!g_done) {
+		ast_mutex_lock(&g_openbsc_lock);
+
 		bsc_upqueue(bsc_gsmnet);
-		bsc_select_main(0);
+		work = bsc_select_main(1);
+
+		ast_mutex_unlock(&g_openbsc_lock);
+
+		if (!work)
+			usleep(100 * 1000);
 	}
 
 	ast_log(LOG_DEBUG, "OpenBSC channel main thread exiting\n");
