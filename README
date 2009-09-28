@@ -1,8 +1,78 @@
+============
 chan_openbsc
-------------
+============
 
 Channel driver for the OpenBSC project ( http://openbsc.gnumonks.org/ )
 
-To build, just make sure you have the asterisk sources in ../asterisk,
-or use the ASTSRC env variable. Then just type make.
+
+Building
+--------
+
+This module is made for the asterisk 1.6.2 branch.
+
+To build it, you'll need the asterisk sources (configured, so it's best
+if it's the sources you installed from) and the OpenBSC source.
+
+The default makefile assumes that the asterisk sources are in ../asterisk
+and the OpenBSC sources are in ../openbsc . If it's not the case, you
+can override those locations with the ASTSRC & OPENBSCSRC variables
+respectively.
+
+You first need to compile OpenBSC itself, but since in asterisk it will
+be in a dynamic module you need to make sure to (re-)build it with :
+
+$ make CFLAGS=-fPIC
+
+Once that's done, you can just type make in the ast_chan_openbsc directory
+and it should build without problems.
+
+If you have build problems, please fix and submit patch :)
+
+
+Using
+-----
+
+Using it is pretty straightforward:
+
+* Make sure OpenBSC works standalone
+
+  Using bsc_hack, you should test that OpenBSC itself works, that your
+  openbsc.cfg is properly setup and that your subscribers are in the
+  HLR sqlite3 database.
+
+* Configure the channel driver
+
+  Just place an 'openbsc.conf' in your asterisk configuration directory,
+  using the . The two main required parameters are the location of the
+  OpenBSC .cfg file and of the HLR database.
+
+* Install the channel driver module
+
+  You need to copy the chan_openbsc.so in the asterisk module directory,
+  usually /usr/lib/asterisk/modules/ . In theory asterisk auto-loads modules
+  but if you have a custom configuration, you may need to make sure it's
+  loaded in modules.conf of asterisk.
+
+* Start asterisk
+
+  "Soon" after asterisk is started, the nanoBTS should connect and start
+  broadcasting the network.
+
+* To place a call
+
+  You need a target extensions in your extensions.conf , something like
+
+  exten => _2XXX,1,Dial(OpenBSC/${EXTEN:1}, 20, rt)
+
+  The part after the "OpenBSC/" is the extension as registred in the
+  OpenBSC HLR database.
+
+
+Limitations
+-----------
+
+Wow, there is so many, here's a few ones:
+
+ - ip.access nanoBTS only
+ - Can't reload the module, have to restart asterisk.
 
