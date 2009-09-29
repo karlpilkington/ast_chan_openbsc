@@ -39,7 +39,7 @@ index bac920e..752a554 100644
 +
 +	DEBUGP(DCC, "Setting up external RTP TCH map between (bts=%u,trx=%u,ts=%u) and (ip=%08x, port=%d)\n",
 +		bts->nr, lchan->ts->trx->nr, lchan->ts->nr,
-+		ip, port);
++		*ip, *port);
 +
 +	switch (bts->type) {
 +	case GSM_BTS_TYPE_NANOBTS_900:
