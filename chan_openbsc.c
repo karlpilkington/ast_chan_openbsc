@@ -543,7 +543,23 @@ static struct ast_frame *
 openbsc_chan_read(struct ast_channel *chan)
 {
 	struct openbsc_chan_priv *p = chan->tech_pvt;
-	return p->rtp ? ast_rtp_read(p->rtp) : &ast_null_frame;
+	struct ast_frame *f;
+
+	if (!p->rtp)
+		return &ast_null_frame;
+
+	switch (chan->fdno) {
+		case 0:
+			f = ast_rtp_read(p->rtp);
+			break;
+
+		case 1:
+			f = ast_rtcp_read(p->rtp);
+			break;
+
+		default:
+			f = &ast_null_frame;
+	}
 }
 
 static int
