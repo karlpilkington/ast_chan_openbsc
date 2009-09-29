@@ -69,6 +69,7 @@ AST_MUTEX_DEFINE_STATIC(g_openbsc_lock);
 
 
 static struct openbsc_chan_priv *_openbsc_chan_priv_find(u_int32_t callref);
+static int mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg);
 
 
 /* ------------------------------------------------------------------------ */
@@ -158,7 +159,7 @@ openbsc_init(struct openbsc_config *cfg)
 	ast_log(LOG_DEBUG, "DB: Database prepared.\n");
 
 	/* Bootstrap all network stuff */
-	rc = bsc_bootstrap_network(mncc_recv, cfg->config_file);
+	rc = bsc_bootstrap_network(mncc_recv_ast, cfg->config_file);
 	if (rc < 0) {
 		ast_log(LOG_ERROR, "Failed to bootstrap network\n");
 		return -1;
@@ -209,6 +210,61 @@ openbsc_stop(void)
 {
 	g_done = 1;
 	pthread_join(g_main_tid, NULL);
+}
+
+/* }}} */
+
+
+/* ------------------------------------------------------------------------ */
+/* MNCC                                                                     */
+/* ---------------------------------------------------------------------{{{ */
+
+static struct gsm_mncc *
+mncc_create(int msg_type, u_int32_t callref)
+{
+	struct gsm_mncc *mncc;
+
+	mncc = (struct gsm_mncc *)ast_malloc(sizeof(struct gsm_mncc));
+	memset(mncc, 0x00, sizeof(struct gsm_mncc));
+
+	mncc->msg_type = msg_type;
+	mncc->callref = callref;
+
+	return mncc;
+}
+
+static int
+mncc_send_and_free(struct gsm_network *net, unsigned int msg_type, void *data)
+{
+	int ret;
+
+	ret = mncc_send(net, msg_type, data);
+	free(data);
+
+	return ret;
+}
+
+
+static int
+mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg)
+{
+	struct gsm_mncc *data = arg;
+	struct gsm_mncc *s;
+	struct openbsc_chan_priv *p;
+
+	p = _openbsc_chan_priv_find(data->callref);
+
+	DEBUGP(DMNCC, "Received message %s (priv=%p)\n", get_mncc_name(msg_type), p);
+
+	switch(msg_type) {
+
+	/* FIXME handle MNCC messages here ! */
+
+	default:
+		break;
+	}
+
+	return 0;
 }
 
 /* }}} */
