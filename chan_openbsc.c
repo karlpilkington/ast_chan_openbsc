@@ -69,6 +69,10 @@ static struct in_addr g_ourip;
 AST_MUTEX_DEFINE_STATIC(g_openbsc_lock);
 
 
+static struct ast_channel *_openbsc_chan_new(
+	struct openbsc_chan_priv *p, int state);
+static struct openbsc_chan_priv *_openbsc_chan_priv_new(
+	u_int32_t callref, enum call_direction dir);
 static struct openbsc_chan_priv *_openbsc_chan_priv_find(u_int32_t callref);
 static int mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg);
 
@@ -255,9 +259,31 @@ mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg)
 
 	p = _openbsc_chan_priv_find(data->callref);
 
+	if (!p) {
+		struct ast_channel *chan;
+
+		if (msg_type != MNCC_SETUP_IND) {
+			DEBUGP(DMNCC, "Received message %s for non-existant call\n", get_mncc_name(msg_type));
+			return 0;
+		}
+
+		p = _openbsc_chan_priv_new(data->callref, MOBILE_ORIGINATED);
+		chan = _openbsc_chan_new(p, AST_STATE_RINGING);
+		strcpy(chan->context, "local");
+		strcpy(chan->exten, data->called.number);
+		ast_set_callerid(chan, data->calling.number, NULL, NULL);
+		ast_pbx_start(chan);
+	}
+
 	DEBUGP(DMNCC, "Received message %s (priv=%p)\n", get_mncc_name(msg_type), p);
 
 	switch(msg_type) {
+	case MNCC_SETUP_IND:
+		s = mncc_create(MNCC_CALL_PROC_REQ, p->callref);
+		mncc_send_and_free(net, MNCC_CALL_PROC_REQ, s);
+
+		break;
+
 	case MNCC_SETUP_CNF:
 		/* acknowledge connect */
 		s = mncc_create(MNCC_SETUP_COMPL_REQ, p->callref);
@@ -283,6 +309,32 @@ mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg)
 		}
 
 		/* channel is up */
+		ast_channel_lock(p->owner);
+		ast_queue_control(p->owner, AST_CONTROL_ANSWER);
+		ast_channel_unlock(p->owner);
+
+		break;
+
+	case MNCC_SETUP_COMPL_IND:
+		/* setup media channel */
+		{
+			struct sockaddr_in sin;
+			struct gsm_mncc_bridge_rtp_arg arg;
+
+			ast_rtp_get_us(p->rtp, &sin);
+
+			arg.callref = p->callref;
+			arg.ip = htonl(g_ourip.s_addr);
+			arg.port = ntohs(sin.sin_port);
+			ast_log(LOG_NOTICE, "RTP IN on %08x %d\n", arg.ip, arg.port);
+			mncc_send(net, MNCC_BRIDGE_RTP, &arg);
+
+			sin.sin_addr.s_addr = htonl(arg.ip);
+			sin.sin_port = htons(arg.port);
+			ast_log(LOG_NOTICE, "RTP OUT to %08x %d\n", arg.ip, arg.port);
+			ast_rtp_set_peer(p->rtp, &sin);
+		}
+
 		ast_channel_lock(p->owner);
 		ast_queue_control(p->owner, AST_CONTROL_ANSWER);
 		ast_channel_unlock(p->owner);
@@ -486,12 +538,14 @@ openbsc_chan_devicestate(void *data)
 static int
 openbsc_chan_send_digit_begin(struct ast_channel *chan, char digit)
 {
+	ast_log(LOG_NOTICE, "Enter\n");
 	return 0;
 }
 
 static int
 openbsc_chan_send_digit_end(struct ast_channel *chan, char digit, unsigned int duration)
 {
+	ast_log(LOG_NOTICE, "Enter\n");
 	return 0;
 }
 
@@ -527,6 +581,8 @@ openbsc_chan_hangup(struct ast_channel *chan)
 {
 	struct openbsc_chan_priv *p = chan->tech_pvt;
 
+	ast_log(LOG_NOTICE, "Enter\n");
+
 	_openbsc_chan_detach(chan);
 	_openbsc_chan_priv_destroy(p); /* FIXME shouldn't be done here in the future */
 
@@ -536,6 +592,23 @@ openbsc_chan_hangup(struct ast_channel *chan)
 static int
 openbsc_chan_answer(struct ast_channel *chan)
 {
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+	struct gsm_mncc *s;
+
+	ast_log(LOG_NOTICE, "Enter\n");
+
+	ast_mutex_lock(&g_openbsc_lock);
+
+	/* Modify mode */
+	s = mncc_create(MNCC_LCHAN_MODIFY, p->callref);
+	s->lchan_mode = GSM48_CMODE_SPEECH_V1;
+	mncc_send_and_free(bsc_gsmnet, MNCC_LCHAN_MODIFY, s);
+
+	s = mncc_create(MNCC_SETUP_RSP, p->callref);
+	mncc_send_and_free(bsc_gsmnet, MNCC_SETUP_RSP, s);
+
+	ast_mutex_unlock(&g_openbsc_lock);
+
 	return 0;
 }
 
@@ -623,12 +696,14 @@ openbsc_chan_early_bridge(struct ast_channel *c0, struct ast_channel *c1)
 static int
 openbsc_chan_indicate(struct ast_channel *c, int condition, const void *data, size_t datalen)
 {
+	ast_log(LOG_NOTICE, "Enter %08x - %p (%d)\n", condition, data, datalen);
 	return 0;
 }
 
 static int
 openbsc_chan_fixup(struct ast_channel *oldchan, struct ast_channel *newchan)
 {
+	ast_log(LOG_NOTICE, "Enter\n");
 	return 0;
 }
 
