@@ -28,6 +28,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include <openbsc/select.h>
 #include <openbsc/talloc.h>
 
+#include "asterisk/causes.h"
 #include "asterisk/channel.h"
 #include "asterisk/io.h"
 #include "asterisk/linkedlists.h"
@@ -257,8 +258,57 @@ mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg)
 	DEBUGP(DMNCC, "Received message %s (priv=%p)\n", get_mncc_name(msg_type), p);
 
 	switch(msg_type) {
+	case MNCC_SETUP_CNF:
+		/* acknowledge connect */
+		s = mncc_create(MNCC_SETUP_COMPL_REQ, p->callref);
+		mncc_send_and_free(net, MNCC_SETUP_COMPL_REQ, s);
 
-	/* FIXME handle MNCC messages here ! */
+		/* setup media channel */
+		{
+			struct sockaddr_in sin;
+			struct gsm_mncc_bridge_rtp_arg arg;
+
+			ast_rtp_get_us(p->rtp, &sin);
+
+			arg.callref = p->callref;
+			arg.ip = htonl(g_ourip.s_addr);
+			arg.port = ntohs(sin.sin_port);
+			ast_log(LOG_NOTICE, "RTP IN on %08x %d\n", arg.ip, arg.port);
+			mncc_send(net, MNCC_BRIDGE_RTP, &arg);
+
+			sin.sin_addr.s_addr = htonl(arg.ip);
+			sin.sin_port = htons(arg.port);
+			ast_log(LOG_NOTICE, "RTP OUT to %08x %d\n", arg.ip, arg.port);
+			ast_rtp_set_peer(p->rtp, &sin);
+		}
+
+		/* channel is up */
+		ast_channel_lock(p->owner);
+		ast_queue_control(p->owner, AST_CONTROL_ANSWER);
+		ast_channel_unlock(p->owner);
+
+		break;
+
+	case MNCC_CALL_CONF_IND:
+		/* we now need to MODIFY the channel */
+		data->lchan_mode = GSM48_CMODE_SPEECH_V1;
+		mncc_send(net, MNCC_LCHAN_MODIFY, data);
+		break;
+
+	case MNCC_ALERT_IND:
+		ast_channel_lock(p->owner);
+		ast_queue_control(p->owner, AST_CONTROL_RINGING);
+		ast_channel_unlock(p->owner);
+		break;
+
+	case MNCC_DISC_IND:
+		ast_channel_lock(p->owner);
+		ast_queue_hangup_with_cause(p->owner, AST_CAUSE_NORMAL_CLEARING);
+		ast_channel_unlock(p->owner);
+		break;
+
+	case MNCC_REL_IND:
+		break;
 
 	default:
 		break;
@@ -448,6 +498,27 @@ openbsc_chan_send_digit_end(struct ast_channel *chan, char digit, unsigned int d
 static int
 openbsc_chan_call(struct ast_channel *chan, char *addr, int timeout)
 {
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+	struct gsm_mncc *setup;
+
+	setup = mncc_create(MNCC_SETUP_REQ, p->callref);
+
+	setup->fields |= MNCC_F_CALLING;
+	setup->calling.type = 0;        /* NATIONAL */
+	setup->calling.plan = 0;        /* ? */
+	setup->calling.present = 0;     /* ALLOWED */
+	setup->calling.screen = 0;      /* ? */
+	strcpy(setup->calling.number, "Destiny");	/* FIXME: strcpy ! */
+
+	setup->fields |= MNCC_F_CALLED;
+	strcpy(setup->called.number, addr);		/* FIXME: strcpy ! */
+
+	ast_mutex_lock(&g_openbsc_lock);
+	mncc_send_and_free(bsc_gsmnet, MNCC_SETUP_REQ, setup);
+	ast_mutex_unlock(&g_openbsc_lock);
+
+	ast_setstate(chan, AST_STATE_DIALING);
+
 	return 0;
 }
 
