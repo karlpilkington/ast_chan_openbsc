@@ -334,7 +334,7 @@ _openbsc_chan_new(struct openbsc_chan_priv *p, int state)
 {
 	struct ast_channel *chan = NULL;
 
-	chan = ast_channel_alloc(1, state, 0, NULL, "", "", "", 0, "OpenBSC/callref-%d", p->callref);
+	chan = ast_channel_alloc(1, state, 0, NULL, "", "", "", 0, "OpenBSC/callref-%08x", p->callref);
 	if (!chan)
 		return NULL;
 
