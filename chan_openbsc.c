@@ -68,6 +68,9 @@ static struct in_addr g_ourip;
 AST_MUTEX_DEFINE_STATIC(g_openbsc_lock);
 
 
+static struct openbsc_chan_priv *_openbsc_chan_priv_find(u_int32_t callref);
+
+
 /* ------------------------------------------------------------------------ */
 /* OpenBSC                                                                  */
 /* ---------------------------------------------------------------------{{{ */
@@ -323,9 +326,18 @@ _openbsc_chan_priv_destroy(struct openbsc_chan_priv *p)
 static struct openbsc_chan_priv *
 _openbsc_chan_priv_find(u_int32_t callref)
 {
-	/* FIXME */
-	/* Also, what about race conditions ? I could find a channel with the
-	 * given callref but then have it deleted under my nose ... */
+		/* What about race conditions ? I could find a channel with the
+		 * given callref but then have it deleted under my nose ... */
+	struct openbsc_chan_priv *c, *h = NULL;
+	AST_RWLIST_RDLOCK(&g_privs);
+	AST_RWLIST_TRAVERSE(&g_privs, c, _list) {
+		if (c->callref == callref) {
+			h = c;
+			break;
+		}
+	}
+	AST_RWLIST_UNLOCK(&g_privs);
+	return h;
 }
 
 
