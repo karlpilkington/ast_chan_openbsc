@@ -25,3 +25,5 @@ db_file = /path/to/hlr.sqlite3
 ; PCAP file
 ; pcap_file = /path/to/log.pcap
 
+; Bind Address
+; bindaddr = 192.168.0.1

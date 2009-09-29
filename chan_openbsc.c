@@ -29,9 +29,13 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include <openbsc/talloc.h>
 
 #include "asterisk/channel.h"
+#include "asterisk/io.h"
 #include "asterisk/linkedlists.h"
 #include "asterisk/logger.h"
 #include "asterisk/module.h"
+#include "asterisk/rtp.h"
+#include "asterisk/sched.h"
+#include "asterisk/utils.h"
 
 
 enum call_direction {
@@ -46,11 +50,19 @@ struct openbsc_chan_priv {
 	u_int32_t callref;
 	enum call_direction dir;
 
+	struct ast_rtp *rtp;
+
 	AST_LIST_ENTRY(openbsc_chan_priv) _list;
 };
 
 static AST_RWLIST_HEAD_STATIC(g_privs, openbsc_chan_priv);
 static u_int32_t g_nextcallref = 0x00000001;	/* uses g_privs lock */
+
+static struct sched_context *g_sched_ctx = NULL;
+static struct io_context *g_io_ctx = NULL;
+
+static struct sockaddr_in g_bindaddr = { 0, };
+static struct in_addr g_ourip;
 
 
 AST_MUTEX_DEFINE_STATIC(g_openbsc_lock);
@@ -65,6 +77,7 @@ struct openbsc_config {
 	char db_file[PATH_MAX];
 	char pcap_file[PATH_MAX];
 	char debug_filter[128];
+	char bindaddr[128];
 	int debug_color;
 	int debug_timestamp;
 	int reject_cause;
@@ -224,6 +237,9 @@ _openbsc_chan_new(struct openbsc_chan_priv *p, int state)
 	chan->tech_pvt = p;
 	p->owner = chan;
 
+	ast_channel_set_fd(chan, 0, ast_rtp_fd(p->rtp));
+	ast_channel_set_fd(chan, 1, ast_rtcp_fd(p->rtp));
+
 	ast_module_ref(ast_module_info->self);
 
 	return chan;
@@ -233,6 +249,9 @@ static void
 _openbsc_chan_detach(struct ast_channel *chan)
 {
 	struct openbsc_chan_priv *p = chan->tech_pvt;
+
+	ast_channel_set_fd(chan, 0, -1);
+	ast_channel_set_fd(chan, 1, -1);
 
 	chan->tech_pvt = NULL;
 	p->owner = NULL;
@@ -263,6 +282,15 @@ _openbsc_chan_priv_new(u_int32_t callref, enum call_direction dir)
 	p->callref = callref;
 	p->dir = dir;
 
+	/* RTP init */
+	p->rtp = ast_rtp_new_with_bindaddr(g_sched_ctx, g_io_ctx, 1, 0, g_bindaddr.sin_addr);
+	if (!p->rtp) {
+		ast_log(LOG_ERROR, "Failed to allocate channel RTP stream\n");
+		goto error;
+	}
+
+	ast_rtp_pt_clear(p->rtp);
+
 	/* Finally add to the list */
 	AST_RWLIST_INSERT_HEAD(&g_privs, p, _list);
 
@@ -284,6 +312,9 @@ _openbsc_chan_priv_destroy(struct openbsc_chan_priv *p)
 	AST_RWLIST_WRLOCK(&g_privs);
 	AST_RWLIST_REMOVE(&g_privs, p, _list);
 	AST_RWLIST_UNLOCK(&g_privs);
+
+	/* Destroy rtp */
+	ast_rtp_destroy(p->rtp);
 
 	/* Free memory */
 	ast_free(p);
@@ -372,12 +403,26 @@ openbsc_chan_answer(struct ast_channel *chan)
 static struct ast_frame *
 openbsc_chan_read(struct ast_channel *chan)
 {
-	return 0;
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+	return p->rtp ? ast_rtp_read(p->rtp) : &ast_null_frame;
 }
 
 static int
 openbsc_chan_write(struct ast_channel *chan, struct ast_frame *frame)
 {
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+
+	switch (frame->frametype) {
+	case AST_FRAME_VOICE:
+		return p->rtp ? ast_rtp_write(p->rtp, frame) : 0;
+
+	default:
+		ast_log(LOG_WARNING,
+			"Can't send %d type frames with write\n",
+			frame->frametype
+		);
+	}
+
 	return 0;
 }
 
@@ -540,6 +585,87 @@ static const struct ast_channel_tech openbsc_tech = {
 
 
 /* ------------------------------------------------------------------------ */
+/* RTP interface                                                            */
+/* ---------------------------------------------------------------------{{{ */
+
+/* Main thread */
+static pthread_t g_rtp_tid;
+
+static void *
+openbsc_rtp_main(void *data)
+{
+	int rv;
+
+	while(1) {
+		pthread_testcancel();
+		/* Wait for sched or io */
+		rv = ast_sched_wait(g_sched_ctx);
+		if ((rv < 0) || (rv > 1000)) {
+			rv = 1000;
+		}
+		rv = ast_io_wait(g_io_ctx, rv);
+		if (rv >= 0) {
+			ast_sched_runq(g_sched_ctx);
+		}
+	}
+
+	return NULL; /* Never reached */
+}
+
+static int
+openbsc_rtp_start(void)
+{
+	return ast_pthread_create(&g_rtp_tid, NULL, openbsc_rtp_main, NULL);
+}
+
+static void
+openbsc_rtp_stop(void)
+{
+	pthread_cancel(g_rtp_tid);
+	pthread_join(g_rtp_tid, NULL);
+}
+
+
+/* Interface implementation */
+static enum ast_rtp_get_result
+openbsc_rtp_get_peer(struct ast_channel *chan, struct ast_rtp **rtp)
+{
+	struct openbsc_chan_priv *p = chan->tech_pvt;
+	if (p && p->rtp) {
+		*rtp = p->rtp;
+		return AST_RTP_TRY_PARTIAL;
+	}
+	return AST_RTP_GET_FAILED;
+}
+
+static int
+openbsc_rtp_set_peer(struct ast_channel *chan,
+		struct ast_rtp *peer, struct ast_rtp *vpeer, struct ast_rtp *tpeer,
+		int codecs, int nat_active)
+{
+	/* Direct media path not supported */
+	ast_log(LOG_WARNING, "set_rtp_peer is not supported for now");
+	return 0;
+}
+
+static int
+openbsc_rtp_get_codec(struct ast_channel *chan)
+{
+	return chan->nativeformats;
+}
+
+
+static struct ast_rtp_protocol openbsc_rtp = {
+	.type = "OpenBSC",
+	.get_rtp_info  = openbsc_rtp_get_peer,
+	.set_rtp_peer  = openbsc_rtp_set_peer,
+	.get_codec     = openbsc_rtp_get_codec,
+};
+
+/* }}} */
+
+
+/* ------------------------------------------------------------------------ */
 /* Asterisk Module                                                          */
 /* ---------------------------------------------------------------------{{{ */
 
@@ -595,6 +721,8 @@ config_module(void)
 			cfg->reject_cause = atoi(v->value);
 		} else if (!strcasecmp(v->name, "pcap_file")) {
 			ast_copy_string(cfg->pcap_file, v->value, sizeof(cfg->pcap_file));
+		} else if (!strcasecmp(v->name, "bindaddr")) {
+			ast_copy_string(cfg->bindaddr, v->value, sizeof(cfg->bindaddr));
 		} else {
 			ast_log(LOG_WARNING, "Unknown config key %s ignored\n", v->name);
 		}
@@ -610,35 +738,91 @@ static int
 load_module(void)
 {
 	struct openbsc_config *cfg;
+	struct ast_hostent ahp;
+	struct hostent *hp;
 	int rv;
 
 	cfg = config_module();
 	if (!cfg)
 		return AST_MODULE_LOAD_DECLINE;
 
+	if (cfg->bindaddr[0]) {
+		if (!(hp = ast_gethostbyname(cfg->bindaddr, &ahp))) {
+			ast_log(LOG_WARNING, "Invalid address: %s\n", cfg->bindaddr);
+		} else {
+			memcpy(&g_bindaddr.sin_addr, hp->h_addr, sizeof(g_bindaddr.sin_addr));
+		}
+	}
+
+	if (ast_find_ourip(&g_ourip, g_bindaddr)) {
+		ast_log(LOG_ERROR, "Unable to get own IP address, OpenBSC disabled\n");
+		goto error_free_cfg;
+	}
+
 	rv = openbsc_init(cfg);
-
-	free(cfg);
-
 	if (rv) {
 		ast_log(LOG_ERROR, "Failed to initialize OpenBSC\n");
-		return AST_MODULE_LOAD_FAILURE;
+		goto error_free_cfg;
+	}
+
+	g_io_ctx = io_context_create();
+	if (!g_io_ctx) {
+		ast_log(LOG_ERROR, "Unable to create IO context\n");
+		goto error_free;
+	}
+
+	g_sched_ctx = sched_context_create();
+	if (!g_sched_ctx) {
+		ast_log(LOG_ERROR, "Unable to create Scheduling context\n");
+		goto error_free;
+	}
+
+	if (ast_rtp_proto_register(&openbsc_rtp)) {
+		ast_log(LOG_ERROR, "Unable to RTP protocol class 'OpenBSC'\n");
+		goto error_free;
 	}
 
 	if (ast_channel_register(&openbsc_tech)) {
 		ast_log(LOG_ERROR, "Unable to register channel class 'OpenBSC'\n");
-		return AST_MODULE_LOAD_FAILURE;
+		goto error_unreg_rtp;
+	}
+
+	if (openbsc_rtp_start()) {
+		ast_log(LOG_ERROR, "Unable to start OpenBSC RTP thread\n");
+		goto error_unreg_chan;
 	}
 
 	if (openbsc_start()) {
-		ast_channel_unregister(&openbsc_tech);
 		ast_log(LOG_ERROR, "Unable to start OpenBSC main thread\n");
-		return AST_MODULE_LOAD_FAILURE;
+		goto error_stoprtp;
 	}
 
 	ast_log(LOG_NOTICE, "OpenBSC channel driver loaded\n");
 
 	return AST_MODULE_LOAD_SUCCESS;
+
+error_stoprtp:
+	openbsc_rtp_stop();
+
+error_unreg_chan:
+	ast_channel_unregister(&openbsc_tech);
+
+error_unreg_rtp:
+	ast_rtp_proto_unregister(&openbsc_rtp);
+
+error_free:
+	if (g_sched_ctx)
+		sched_context_destroy(g_sched_ctx);
+
+	if (g_io_ctx)
+		io_context_destroy(g_io_ctx);
+
+	openbsc_destroy();
+
+error_free_cfg:
+	free(cfg);
+
+	return AST_MODULE_LOAD_FAILURE;
 }
 
 
@@ -649,7 +833,12 @@ unload_module(void)
 
 	openbsc_stop();
 
+	openbsc_rtp_stop();
+
 	ast_channel_unregister(&openbsc_tech);
+	ast_rtp_proto_unregister(&openbsc_rtp);
+	sched_context_destroy(g_sched_ctx);
+	io_context_destroy(g_io_ctx);
 
 	openbsc_destroy();
 
