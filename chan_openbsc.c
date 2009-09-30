@@ -282,6 +282,19 @@ mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg)
 		s = mncc_create(MNCC_CALL_PROC_REQ, p->callref);
 		mncc_send_and_free(net, MNCC_CALL_PROC_REQ, s);
 
+		/* Modify mode */
+		s = mncc_create(MNCC_LCHAN_MODIFY, p->callref);
+		s->lchan_mode = GSM48_CMODE_SPEECH_V1;
+		mncc_send_and_free(bsc_gsmnet, MNCC_LCHAN_MODIFY, s);
+
+		/* Send alerting */
+		s = mncc_create(MNCC_ALERT_REQ, p->callref);
+		s->fields = MNCC_F_PROGRESS;
+		s->progress.coding = 3;
+		s->progress.location = 1;
+		s->progress.descr = 32;
+		mncc_send_and_free(bsc_gsmnet, MNCC_ALERT_REQ, s);
+
 		break;
 
 	case MNCC_SETUP_CNF:
@@ -558,11 +571,11 @@ openbsc_chan_call(struct ast_channel *chan, char *addr, int timeout)
 	setup = mncc_create(MNCC_SETUP_REQ, p->callref);
 
 	setup->fields |= MNCC_F_CALLING;
-	setup->calling.type = 0;        /* NATIONAL */
-	setup->calling.plan = 0;        /* ? */
+	setup->calling.type = 0;        /* UNKNOWN TYPE */
+	setup->calling.plan = 9;        /* PRIVATE PLAN */
 	setup->calling.present = 0;     /* ALLOWED */
-	setup->calling.screen = 0;      /* ? */
-	strcpy(setup->calling.number, "Destiny");	/* FIXME: strcpy ! */
+	setup->calling.screen = 3;      /* NETWORK PROVIDED */
+	strcpy(setup->calling.number, "399");	/* FIXME: strcpy ! */
 
 	setup->fields |= MNCC_F_CALLED;
 	strcpy(setup->called.number, addr);		/* FIXME: strcpy ! */
@@ -598,11 +611,6 @@ openbsc_chan_answer(struct ast_channel *chan)
 	ast_log(LOG_NOTICE, "Enter\n");
 
 	ast_mutex_lock(&g_openbsc_lock);
-
-	/* Modify mode */
-	s = mncc_create(MNCC_LCHAN_MODIFY, p->callref);
-	s->lchan_mode = GSM48_CMODE_SPEECH_V1;
-	mncc_send_and_free(bsc_gsmnet, MNCC_LCHAN_MODIFY, s);
 
 	s = mncc_create(MNCC_SETUP_RSP, p->callref);
 	mncc_send_and_free(bsc_gsmnet, MNCC_SETUP_RSP, s);
