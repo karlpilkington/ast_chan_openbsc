@@ -31,6 +31,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include "asterisk/channel.h"
 #include "asterisk/io.h"
 #include "asterisk/linkedlists.h"
+#include "asterisk/lock.h"
 #include "asterisk/logger.h"
 #include "asterisk/module.h"
 #include "asterisk/rtp.h"
@@ -56,7 +57,6 @@ struct openbsc_chan_priv {
 };
 
 static AST_RWLIST_HEAD_STATIC(g_privs, openbsc_chan_priv);
-static u_int32_t g_nextcallref = 0x00000001;	/* uses g_privs lock */
 
 static struct sched_context *g_sched_ctx = NULL;
 static struct io_context *g_io_ctx = NULL;
@@ -276,6 +276,9 @@ mncc_recv_ast(struct gsm_network *net, int msg_type, void *arg)
 
 static const struct ast_channel_tech openbsc_tech;
 
+AST_MUTEX_DEFINE_STATIC(g_nextcallref_lock);
+static u_int32_t g_nextcallref = 0x00000001;
+
 
 /* Helpers */
 
@@ -327,8 +330,10 @@ _openbsc_chan_priv_new(u_int32_t callref, enum call_direction dir)
 
 	/* Auto callref */
 	if (!callref) {
+		ast_mutex_lock(&g_nextcallref_lock);
 		callref = g_nextcallref;
 		g_nextcallref = (g_nextcallref + 1) & 0x7fffffff;
+		ast_mutex_unlock(&g_nextcallref_lock);
 	}
 
 	/* Alloc and init the structure */
