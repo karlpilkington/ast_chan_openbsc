@@ -28,6 +28,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: $")
 #include <openbsc/select.h>
 #include <openbsc/talloc.h>
 
+#include "asterisk/astobj2.h"
 #include "asterisk/channel.h"
 #include "asterisk/io.h"
 #include "asterisk/linkedlists.h"
@@ -44,7 +45,6 @@ enum call_direction {
 	MOBILE_TERMINATED,
 };
 
-	/* Uses the owner lock, or g_openbsc_lock if owner==NULL */
 struct openbsc_chan_priv {
 	struct ast_channel *owner;
 
@@ -53,10 +53,10 @@ struct openbsc_chan_priv {
 
 	struct ast_rtp *rtp;
 
+	int _list_ok;
 	AST_LIST_ENTRY(openbsc_chan_priv) _list;
 };
 
-static AST_RWLIST_HEAD_STATIC(g_privs, openbsc_chan_priv);
 
 static struct sched_context *g_sched_ctx = NULL;
 static struct io_context *g_io_ctx = NULL;
@@ -279,6 +279,8 @@ static const struct ast_channel_tech openbsc_tech;
 AST_MUTEX_DEFINE_STATIC(g_nextcallref_lock);
 static u_int32_t g_nextcallref = 0x00000001;
 
+static AST_RWLIST_HEAD_STATIC(g_privs, openbsc_chan_priv);
+
 
 /* Helpers */
 
@@ -296,6 +298,7 @@ _openbsc_chan_new(struct openbsc_chan_priv *p, int state)
 	chan->readformat    = AST_FORMAT_GSM;
 	chan->writeformat   = AST_FORMAT_GSM;
 
+	ao2_ref(p, 1);
 	chan->tech_pvt = p;
 	p->owner = chan;
 
@@ -317,16 +320,32 @@ _openbsc_chan_detach(struct ast_channel *chan)
 
 	chan->tech_pvt = NULL;
 	p->owner = NULL;
+	ao2_ref(p, -1);
 
 	ast_module_unref(ast_module_info->self);
+}
+
+static void
+_openbsc_chan_priv_destroy(void *data)
+{
+	struct openbsc_chan_priv *p = data;
+
+	/* Remove entry from list */
+	if (p->_list_ok) {
+		AST_RWLIST_WRLOCK(&g_privs);
+		AST_RWLIST_REMOVE(&g_privs, p, _list);
+		AST_RWLIST_UNLOCK(&g_privs);
+	}
+
+	/* Destroy rtp */
+	if (p->rtp)
+		ast_rtp_destroy(p->rtp);
 }
 
 static struct openbsc_chan_priv *
 _openbsc_chan_priv_new(u_int32_t callref, enum call_direction dir)
 {
 	struct openbsc_chan_priv *p = NULL;
-
-	AST_RWLIST_WRLOCK(&g_privs);
 
 	/* Auto callref */
 	if (!callref) {
@@ -337,10 +356,10 @@ _openbsc_chan_priv_new(u_int32_t callref, enum call_direction dir)
 	}
 
 	/* Alloc and init the structure */
-	p = ast_calloc(1, sizeof(*p));
+	p = ao2_alloc(sizeof(*p), _openbsc_chan_priv_destroy);
 	if (!p) {
 		ast_log(LOG_ERROR, "Failed to allocate channel private structure\n");
-		goto error;
+		return NULL;
 	}
 
 	p->callref = callref;
@@ -356,39 +375,24 @@ _openbsc_chan_priv_new(u_int32_t callref, enum call_direction dir)
 	ast_rtp_pt_clear(p->rtp);
 
 	/* Finally add to the list */
+	AST_RWLIST_WRLOCK(&g_privs);
 	AST_RWLIST_INSERT_HEAD(&g_privs, p, _list);
-
 	AST_RWLIST_UNLOCK(&g_privs);
+	p->_list_ok = 1;
 
 	return p;
 
 error:
-	if (p)
-		ast_free(p);
-	AST_RWLIST_UNLOCK(&g_privs);
+	ao2_ref(p, -1);	/* will trigger destructor */
 	return NULL;
-}
-
-static void
-_openbsc_chan_priv_destroy(struct openbsc_chan_priv *p)
-{
-	/* Remove entry from the list */
-	AST_RWLIST_WRLOCK(&g_privs);
-	AST_RWLIST_REMOVE(&g_privs, p, _list);
-	AST_RWLIST_UNLOCK(&g_privs);
-
-	/* Destroy rtp */
-	ast_rtp_destroy(p->rtp);
-
-	/* Free memory */
-	ast_free(p);
 }
 
 static struct openbsc_chan_priv *
 _openbsc_chan_priv_find(u_int32_t callref)
 {
-		/* What about race conditions ? I could find a channel with the
-		 * given callref but then have it deleted under my nose ... */
+	/* Can only be used safely if the caller has already a ref to
+	   that call but doesn't 'know' the ptr. If not, race condition
+	   exist ! */
 	struct openbsc_chan_priv *c, *h = NULL;
 	AST_RWLIST_RDLOCK(&g_privs);
 	AST_RWLIST_TRAVERSE(&g_privs, c, _list) {
@@ -422,12 +426,11 @@ openbsc_chan_requester(const char *type, int format, void *data, int *cause)
 		goto error;
 	}
 
-	return chan;
-
 error:
 	if (p)
-		_openbsc_chan_priv_destroy(p);
-	return NULL;
+		ao2_ref(p, -1);	/* remove ref from alloc, chan owns a ref now */
+
+	return chan;
 }
 
 #if 0
